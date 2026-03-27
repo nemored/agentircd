@@ -1,0 +1,463 @@
+version: 1
+generated_on: 2026-03-27
+scope:
+  product: ircd
+  standards_reviewed:
+    - rfc: 1459
+      title: Internet Relay Chat Protocol
+      url: https://datatracker.ietf.org/doc/html/rfc1459
+    - rfc: 2810
+      title: Internet Relay Chat - Architecture
+      url: https://datatracker.ietf.org/doc/html/rfc2810
+    - rfc: 2811
+      title: Internet Relay Chat - Channel Management
+      url: https://datatracker.ietf.org/doc/html/rfc2811
+    - rfc: 2812
+      title: Internet Relay Chat - Client Protocol
+      url: https://datatracker.ietf.org/doc/html/rfc2812
+    - rfc: 2813
+      title: Internet Relay Chat - Server Protocol
+      url: https://datatracker.ietf.org/doc/html/rfc2813
+    - rfc: 7194
+      title: Default Port for IRC via TLS/SSL
+      url: https://datatracker.ietf.org/doc/html/rfc7194
+
+levels:
+  MUST: "Mandatory behavior required for compliance/interoperability."
+  SHOULD: "Strong recommendation; justify deviations."
+  MAY: "Optional feature; test if implemented."
+
+test_cases:
+  - id: PARSE-001
+    title: "Accept CRLF-terminated IRC message lines"
+    rfc_refs:
+      - rfc: 2812
+        section: "2.3"
+    level: MUST
+    preconditions: ["Connected client socket"]
+    input:
+      raw_lines:
+        - "NICK test\\r\\n"
+    expected:
+      server_behavior:
+        - "Message parsed successfully"
+        - "No framing error"
+    tags: [parser, framing]
+
+  - id: PARSE-002
+    title: "Ignore empty message"
+    rfc_refs:
+      - rfc: 2812
+        section: "2.3.1"
+    level: MUST
+    preconditions: ["Connected client socket"]
+    input:
+      raw_lines:
+        - "\\r\\n"
+    expected:
+      server_behavior:
+        - "Silently ignore empty message"
+    tags: [parser, framing]
+
+  - id: PARSE-003
+    title: "Enforce 512-byte max line length including CRLF"
+    rfc_refs:
+      - rfc: 2812
+        section: "2.3"
+    level: MUST
+    preconditions: ["Connected client socket"]
+    input:
+      raw_lines:
+        - "<line of exactly 512 bytes including CRLF>"
+        - "<line of 513+ bytes including CRLF>"
+    expected:
+      server_behavior:
+        - "512-byte line accepted or safely truncated per implementation policy"
+        - "Oversize line rejected/safely handled without crash/desync"
+    tags: [parser, limits, robustness]
+
+  - id: PARSE-004
+    title: "Parse prefix, command, middle params, trailing param"
+    rfc_refs:
+      - rfc: 2812
+        section: "2.3.1"
+    level: MUST
+    preconditions: ["Connected client socket"]
+    input:
+      raw_lines:
+        - ":nick!u@h PRIVMSG #chan :hello world\\r\\n"
+    expected:
+      ast:
+        prefix: "nick!u@h"
+        command: "PRIVMSG"
+        params: ["#chan", "hello world"]
+    tags: [parser, grammar]
+
+  - id: REG-001
+    title: "Registration requires NICK + USER"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.1"
+    level: MUST
+    preconditions: ["New unregistered client"]
+    input:
+      sequence:
+        - "NICK test"
+        - "USER user 0 * :Real Name"
+    expected:
+      numerics:
+        - "001 RPL_WELCOME"
+      state:
+        registered: true
+    tags: [registration, state-machine]
+
+  - id: REG-002
+    title: "PASS accepted only pre-registration"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.1.1"
+    level: MUST
+    preconditions: ["Already registered client"]
+    input:
+      sequence:
+        - "PASS secret"
+    expected:
+      numerics:
+        - "462 ERR_ALREADYREGISTRED"
+    tags: [registration, auth]
+
+  - id: REG-003
+    title: "Duplicate nick rejected"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.1.2"
+    level: MUST
+    preconditions:
+      - "Client A registered as nick=test"
+      - "Client B unregistered"
+    input:
+      sequence:
+        - "Client B -> NICK test"
+    expected:
+      numerics:
+        - "433 ERR_NICKNAMEINUSE"
+    tags: [registration, nick]
+
+  - id: MSG-001
+    title: "PRIVMSG requires recipient and text"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.3.1"
+    level: MUST
+    preconditions: ["Registered client"]
+    input:
+      sequence:
+        - "PRIVMSG"
+    expected:
+      numerics:
+        - "411 ERR_NORECIPIENT"
+        - "412 ERR_NOTEXTTOSEND"
+    tags: [commands, privmsg, errors]
+
+  - id: MSG-002
+    title: "NOTICE must not trigger automatic error replies"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.3.2"
+    level: MUST
+    preconditions: ["Registered client"]
+    input:
+      sequence:
+        - "NOTICE nosuchnick :hello"
+    expected:
+      server_behavior:
+        - "No automatic error numeric generated in response to NOTICE failure"
+    tags: [commands, notice, interop]
+
+  - id: MSG-003
+    title: "PING receives PONG"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.7.2"
+    level: MUST
+    preconditions: ["Registered client"]
+    input:
+      sequence:
+        - "PING :token123"
+    expected:
+      outbound_messages:
+        - "PONG :token123"
+    tags: [keepalive, commands]
+
+  - id: CHAN-001
+    title: "JOIN creates channel if nonexistent"
+    rfc_refs:
+      - rfc: 2811
+        section: "2.4"
+      - rfc: 2812
+        section: "3.2.1"
+    level: MUST
+    preconditions: ["No existing #newchan", "Registered client"]
+    input:
+      sequence:
+        - "JOIN #newchan"
+    expected:
+      state:
+        channel_exists: true
+        member_count: 1
+    tags: [channels, lifecycle]
+
+  - id: CHAN-002
+    title: "JOIN 0 parts all joined channels"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.2.1"
+    level: MUST
+    preconditions: ["Registered client joined #a,#b,#c"]
+    input:
+      sequence:
+        - "JOIN 0"
+    expected:
+      state:
+        channels_joined: []
+    tags: [channels, join]
+
+  - id: CHAN-003
+    title: "Invite-only (+i) enforces invitation"
+    rfc_refs:
+      - rfc: 2811
+        section: "4"
+      - rfc: 2812
+        section: "3.2.1"
+    level: MUST
+    preconditions: ["#i is +i", "Client not invited"]
+    input:
+      sequence:
+        - "JOIN #i"
+    expected:
+      numerics:
+        - "473 ERR_INVITEONLYCHAN"
+    tags: [channels, modes, access-control]
+
+  - id: CHAN-004
+    title: "Channel key (+k) required and validated"
+    rfc_refs:
+      - rfc: 2811
+        section: "4"
+      - rfc: 2812
+        section: "3.2.1"
+    level: MUST
+    preconditions: ["#k has mode +k secret"]
+    input:
+      sequence:
+        - "JOIN #k"
+        - "JOIN #k wrong"
+        - "JOIN #k secret"
+    expected:
+      numerics:
+        - "475 ERR_BADCHANNELKEY"
+      final_state:
+        joined: true
+    tags: [channels, modes, access-control]
+
+  - id: CHAN-005
+    title: "No external messages (+n) blocks non-members"
+    rfc_refs:
+      - rfc: 2811
+        section: "4"
+      - rfc: 2812
+        section: "3.3.1"
+    level: MUST
+    preconditions: ["#n is +n", "Sender not in #n"]
+    input:
+      sequence:
+        - "PRIVMSG #n :hello"
+    expected:
+      numerics:
+        - "404 ERR_CANNOTSENDTOCHAN"
+    tags: [channels, messaging, modes]
+
+  - id: CHAN-006
+    title: "Moderated (+m) blocks unvoiced/unopped senders"
+    rfc_refs:
+      - rfc: 2811
+        section: "4"
+      - rfc: 2812
+        section: "3.3.1"
+    level: MUST
+    preconditions: ["#m is +m", "Sender is member without +v/+o"]
+    input:
+      sequence:
+        - "PRIVMSG #m :hello"
+    expected:
+      numerics:
+        - "404 ERR_CANNOTSENDTOCHAN"
+    tags: [channels, messaging, modes]
+
+  - id: QUERY-001
+    title: "NAMES includes channel occupants and end numeric"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.2.5"
+    level: MUST
+    preconditions: ["#x has known membership"]
+    input:
+      sequence:
+        - "NAMES #x"
+    expected:
+      numerics:
+        - "353 RPL_NAMREPLY"
+        - "366 RPL_ENDOFNAMES"
+    tags: [queries, numerics]
+
+  - id: QUERY-002
+    title: "WHOIS returns required multi-line set and terminator"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.6.2"
+    level: MUST
+    preconditions: ["Target nick exists"]
+    input:
+      sequence:
+        - "WHOIS target"
+    expected:
+      numerics:
+        - "311 RPL_WHOISUSER"
+        - "318 RPL_ENDOFWHOIS"
+    tags: [queries, numerics, whois]
+
+  - id: OPER-001
+    title: "OPER requires valid credentials; failure returns proper numeric"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.1.5"
+    level: MUST
+    preconditions: ["Registered non-oper user"]
+    input:
+      sequence:
+        - "OPER name wrongpass"
+    expected:
+      numerics:
+        - "464 ERR_PASSWDMISMATCH"
+    tags: [oper, auth]
+
+  - id: OPER-002
+    title: "Successful OPER sets +o user mode"
+    rfc_refs:
+      - rfc: 2812
+        section: "3.1.5"
+    level: MUST
+    preconditions: ["Registered user with valid oper credentials"]
+    input:
+      sequence:
+        - "OPER name correctpass"
+    expected:
+      numerics:
+        - "381 RPL_YOUREOPER"
+      state:
+        user_modes_contains: ["o"]
+    tags: [oper, modes]
+
+  - id: S2S-001
+    title: "NICK collision handling across linked servers"
+    rfc_refs:
+      - rfc: 2813
+        section: "5.x"
+    level: MUST
+    preconditions:
+      - "Two linked servers"
+      - "Simulated colliding nick introduction"
+    input:
+      sequence:
+        - "<introduce conflicting NICK from remote>"
+    expected:
+      server_behavior:
+        - "Collision resolution per server protocol"
+        - "Network remains consistent"
+    tags: [s2s, collision, resilience]
+
+  - id: S2S-002
+    title: "SQUIT removes remote subtree state"
+    rfc_refs:
+      - rfc: 2813
+        section: "4.x"
+    level: MUST
+    preconditions: ["Multi-server topology with remote users/channels"]
+    input:
+      sequence:
+        - "SQUIT remote.server :reason"
+    expected:
+      state:
+        remote_server_present: false
+        remote_users_removed: true
+    tags: [s2s, topology, cleanup]
+
+  - id: TLS-001
+    title: "TLS listener supports default IRC/TLS port 6697"
+    rfc_refs:
+      - rfc: 7194
+        section: "2"
+    level: SHOULD
+    preconditions: ["TLS support compiled/enabled"]
+    input:
+      config_assertions:
+        - "ircs default service port == 6697"
+    expected:
+      server_behavior:
+        - "TLS endpoint binds/advertises 6697 by default (or explicitly documented override)"
+    tags: [tls, config, ports]
+
+  - id: NUM-001
+    title: "Unknown command returns ERR_UNKNOWNCOMMAND"
+    rfc_refs:
+      - rfc: 2812
+        section: "Numerics / error replies"
+    level: MUST
+    preconditions: ["Registered client"]
+    input:
+      sequence:
+        - "FOOBAR"
+    expected:
+      numerics:
+        - "421 ERR_UNKNOWNCOMMAND"
+    tags: [numerics, errors]
+
+  - id: NUM-002
+    title: "List-style queries always emit end-of-list numeric"
+    rfc_refs:
+      - rfc: 2812
+        section: "Command-specific numerics"
+    level: MUST
+    preconditions: ["Registered client"]
+    input:
+      sequence:
+        - "LIST"
+        - "NAMES"
+        - "WHO #x"
+    expected:
+      server_behavior:
+        - "Each query terminates with corresponding RPL_ENDOF* numeric"
+    tags: [numerics, completeness]
+
+coverage_policy:
+  goals:
+    - "100% MUST tests implemented and passing"
+    - ">=95% SHOULD tests implemented; all deviations documented"
+    - "MAY tests implemented when feature flag is enabled"
+  traceability:
+    required_fields_per_test:
+      - id
+      - rfc_refs
+      - level
+      - expected
+      - tags
+  ci_gates:
+    - name: "must_compliance_gate"
+      rule: "fail build if any MUST test fails"
+    - name: "numerics_stability_gate"
+      rule: "fail build on unexpected numeric code changes"
+
+implementation_notes:
+  - "Use deterministic transcript tests with golden wire captures."
+  - "Add property/fuzz tests for parser safety and malformed lines."
+  - "Store expected numerics as fixtures to catch regressions."
